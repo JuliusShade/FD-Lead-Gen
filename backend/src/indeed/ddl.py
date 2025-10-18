@@ -1,0 +1,392 @@
+"""
+DDL generation and execution for raw_indeed_jobs table.
+Supports both PostgreSQL and MySQL.
+"""
+
+import os
+import logging
+import psycopg2
+from psycopg2.extras import Json
+from typing import Dict, Optional, Any, List
+import json
+
+logger = logging.getLogger(__name__)
+
+
+class DatabaseManager:
+    """Manages database connections and DDL operations."""
+
+    def __init__(self):
+        """Initialize database manager from environment config."""
+        self.engine = os.getenv('DB_ENGINE', 'postgres').lower()
+        self.host = os.getenv('DB_HOST')
+        self.port = int(os.getenv('DB_PORT', '5432'))
+        self.database = os.getenv('DB_DATABASE')
+        self.user = os.getenv('DB_USERNAME')
+        self.password = os.getenv('DB_PASSWORD')
+        self.ssl = os.getenv('DB_SSL', 'true').lower() == 'true'
+
+        if not all([self.host, self.database, self.user, self.password]):
+            raise ValueError("Missing required database environment variables")
+
+        self.connection = None
+        self.cursor = None
+
+    def connect(self):
+        """Establish database connection."""
+        if self.engine == 'postgres':
+            self._connect_postgres()
+        elif self.engine == 'mysql':
+            self._connect_mysql()
+        else:
+            raise ValueError(f"Unsupported database engine: {self.engine}")
+
+        logger.info(f"Connected to {self.engine} database: {self.database}")
+
+    def _connect_postgres(self):
+        """Connect to PostgreSQL/Aurora."""
+        import psycopg2
+
+        conn_params = {
+            'host': self.host,
+            'port': self.port,
+            'database': self.database,
+            'user': self.user,
+            'password': self.password
+        }
+
+        if self.ssl:
+            conn_params['sslmode'] = 'require'
+
+        self.connection = psycopg2.connect(**conn_params)
+        self.cursor = self.connection.cursor()
+
+    def _connect_mysql(self):
+        """Connect to MySQL/Aurora."""
+        import mysql.connector
+
+        conn_params = {
+            'host': self.host,
+            'port': self.port,
+            'database': self.database,
+            'user': self.user,
+            'password': self.password
+        }
+
+        if self.ssl:
+            conn_params['ssl_disabled'] = False
+
+        self.connection = mysql.connector.connect(**conn_params)
+        self.cursor = self.connection.cursor()
+
+    def disconnect(self):
+        """Close database connection."""
+        if self.cursor:
+            self.cursor.close()
+        if self.connection:
+            self.connection.close()
+        logger.info("Database connection closed")
+
+    def create_table(self, schema: Dict[str, str], has_provider_id: bool = False):
+        """
+        Create raw_indeed_jobs table based on discovered schema.
+
+        Args:
+            schema: Dictionary mapping field names to SQL types
+            has_provider_id: Whether provider_id field exists in schema
+        """
+        if self.engine == 'postgres':
+            ddl = self._generate_postgres_ddl(schema, has_provider_id)
+        elif self.engine == 'mysql':
+            ddl = self._generate_mysql_ddl(schema, has_provider_id)
+        else:
+            raise ValueError(f"Unsupported engine: {self.engine}")
+
+        logger.info("Creating table raw_indeed_jobs...")
+        logger.debug(f"DDL:\n{ddl}")
+
+        try:
+            self.cursor.execute(ddl)
+            self.connection.commit()
+            logger.info("Table raw_indeed_jobs created successfully")
+        except Exception as e:
+            logger.error(f"Failed to create table: {e}")
+            self.connection.rollback()
+            raise
+
+    def _generate_postgres_ddl(self, schema: Dict[str, str], has_provider_id: bool) -> str:
+        """
+        Generate PostgreSQL DDL for raw_indeed_jobs.
+
+        Args:
+            schema: Field schema dictionary
+            has_provider_id: Include provider_id unique constraint
+
+        Returns:
+            DDL string
+        """
+        columns = [
+            "id BIGSERIAL PRIMARY KEY",
+            "provider_id TEXT",
+            "job_hash TEXT NOT NULL UNIQUE"
+        ]
+
+        # Add discovered fields
+        for field, sql_type in sorted(schema.items()):
+            # Skip if already defined
+            if field in ['id', 'provider_id', 'job_hash', 'source_payload', 'ingested_at']:
+                continue
+
+            # Map generic types to Postgres-specific
+            pg_type = self._map_to_postgres_type(sql_type)
+            columns.append(f"{field} {pg_type}")
+
+        # Add required fields
+        columns.extend([
+            "source_payload JSONB NOT NULL",
+            "ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+        ])
+
+        column_defs = ',\n    '.join(columns)
+        ddl = f"""
+CREATE TABLE IF NOT EXISTS raw_indeed_jobs (
+    {column_defs}
+);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_raw_indeed_jobs_posted_at ON raw_indeed_jobs(posted_at);
+CREATE INDEX IF NOT EXISTS idx_raw_indeed_jobs_company ON raw_indeed_jobs(company);
+CREATE INDEX IF NOT EXISTS idx_raw_indeed_jobs_ingested_at ON raw_indeed_jobs(ingested_at);
+"""
+
+        # Add provider_id unique constraint if stable
+        if has_provider_id:
+            ddl += "\nCREATE UNIQUE INDEX IF NOT EXISTS idx_raw_indeed_jobs_provider_id ON raw_indeed_jobs(provider_id) WHERE provider_id IS NOT NULL;"
+
+        return ddl
+
+    def _generate_mysql_ddl(self, schema: Dict[str, str], has_provider_id: bool) -> str:
+        """
+        Generate MySQL DDL for raw_indeed_jobs.
+
+        Args:
+            schema: Field schema dictionary
+            has_provider_id: Include provider_id unique constraint
+
+        Returns:
+            DDL string
+        """
+        columns = [
+            "id BIGINT AUTO_INCREMENT PRIMARY KEY",
+            "provider_id VARCHAR(255)",
+            "job_hash VARCHAR(64) NOT NULL UNIQUE"
+        ]
+
+        # Add discovered fields
+        for field, sql_type in sorted(schema.items()):
+            if field in ['id', 'provider_id', 'job_hash', 'source_payload', 'ingested_at']:
+                continue
+
+            mysql_type = self._map_to_mysql_type(sql_type)
+            columns.append(f"{field} {mysql_type}")
+
+        # Add required fields
+        columns.extend([
+            "source_payload JSON NOT NULL",
+            "ingested_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        ])
+
+        # Add indexes
+        indexes = [
+            "INDEX idx_posted_at (posted_at)",
+            "INDEX idx_company (company(100))",
+            "INDEX idx_ingested_at (ingested_at)"
+        ]
+
+        if has_provider_id:
+            indexes.append("UNIQUE INDEX idx_provider_id (provider_id)")
+
+        column_defs = ',\n    '.join(columns)
+        index_defs = ',\n    '.join(indexes)
+        ddl = f"""
+CREATE TABLE IF NOT EXISTS raw_indeed_jobs (
+    {column_defs},
+    {index_defs}
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+"""
+
+        return ddl
+
+    def _map_to_postgres_type(self, generic_type: str) -> str:
+        """Map generic type to PostgreSQL-specific type."""
+        mapping = {
+            'TEXT': 'TEXT',
+            'NUMERIC': 'NUMERIC',
+            'BOOLEAN': 'BOOLEAN',
+            'TIMESTAMPTZ': 'TIMESTAMPTZ',
+            'JSONB': 'JSONB',
+            'JSON': 'JSONB'
+        }
+        return mapping.get(generic_type, 'TEXT')
+
+    def _map_to_mysql_type(self, generic_type: str) -> str:
+        """Map generic type to MySQL-specific type."""
+        mapping = {
+            'TEXT': 'TEXT',
+            'NUMERIC': 'DECIMAL(20,2)',
+            'BOOLEAN': 'TINYINT(1)',
+            'TIMESTAMPTZ': 'DATETIME',
+            'JSONB': 'JSON',
+            'JSON': 'JSON'
+        }
+        return mapping.get(generic_type, 'TEXT')
+
+    def insert_jobs(self, jobs: List[Dict[str, Any]]) -> Dict[str, int]:
+        """
+        Insert job records with deduplication.
+
+        Args:
+            jobs: List of normalized job records (with job_hash)
+
+        Returns:
+            Dictionary with counts: {inserted, skipped, errors}
+        """
+        if not jobs:
+            return {'inserted': 0, 'skipped': 0, 'errors': 0}
+
+        stats = {'inserted': 0, 'skipped': 0, 'errors': 0}
+
+        for job in jobs:
+            try:
+                if self.engine == 'postgres':
+                    result = self._insert_job_postgres(job)
+                elif self.engine == 'mysql':
+                    result = self._insert_job_mysql(job)
+                else:
+                    raise ValueError(f"Unsupported engine: {self.engine}")
+
+                if result:
+                    stats['inserted'] += 1
+                else:
+                    stats['skipped'] += 1
+
+            except Exception as e:
+                logger.error(f"Error inserting job: {e}")
+                stats['errors'] += 1
+
+        self.connection.commit()
+        return stats
+
+    def _insert_job_postgres(self, job: Dict[str, Any]) -> bool:
+        """
+        Insert job into PostgreSQL with ON CONFLICT handling.
+
+        Args:
+            job: Job record with job_hash and source_payload
+
+        Returns:
+            True if inserted, False if skipped
+        """
+        # Get table columns
+        self.cursor.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'raw_indeed_jobs'
+            AND column_name NOT IN ('id', 'ingested_at')
+            ORDER BY ordinal_position
+        """)
+        columns = [row[0] for row in self.cursor.fetchall()]
+
+        # Build insert values
+        values = {}
+        for col in columns:
+            if col == 'source_payload':
+                values[col] = Json(job)
+            elif col == 'job_hash':
+                values[col] = job.get('job_hash')
+            else:
+                val = job.get(col)
+                # Convert dict/list to Json for JSONB columns
+                if isinstance(val, (dict, list)):
+                    values[col] = Json(val)
+                else:
+                    values[col] = val
+
+        # Build SQL
+        col_names = ', '.join(columns)
+        placeholders = ', '.join(['%s'] * len(columns))
+        col_values = [values[col] for col in columns]
+
+        sql = f"""
+            INSERT INTO raw_indeed_jobs ({col_names})
+            VALUES ({placeholders})
+            ON CONFLICT (job_hash) DO NOTHING
+            RETURNING id
+        """
+
+        self.cursor.execute(sql, col_values)
+        result = self.cursor.fetchone()
+
+        return result is not None
+
+    def _insert_job_mysql(self, job: Dict[str, Any]) -> bool:
+        """
+        Insert job into MySQL with INSERT IGNORE.
+
+        Args:
+            job: Job record with job_hash and source_payload
+
+        Returns:
+            True if inserted, False if skipped
+        """
+        # Get table columns
+        self.cursor.execute("""
+            SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = 'raw_indeed_jobs'
+            AND COLUMN_NAME NOT IN ('id', 'ingested_at')
+            ORDER BY ORDINAL_POSITION
+        """)
+        columns = [row[0] for row in self.cursor.fetchall()]
+
+        # Build insert values
+        values = {}
+        for col in columns:
+            if col == 'source_payload':
+                values[col] = json.dumps(job)
+            elif col == 'job_hash':
+                values[col] = job.get('job_hash')
+            else:
+                values[col] = job.get(col)
+
+        # Build SQL
+        col_names = ', '.join(columns)
+        placeholders = ', '.join(['%s'] * len(columns))
+        col_values = [values[col] for col in columns]
+
+        sql = f"""
+            INSERT IGNORE INTO raw_indeed_jobs ({col_names})
+            VALUES ({placeholders})
+        """
+
+        self.cursor.execute(sql, col_values)
+
+        # Check if row was inserted
+        return self.cursor.rowcount > 0
+
+    def table_exists(self) -> bool:
+        """Check if raw_indeed_jobs table exists."""
+        if self.engine == 'postgres':
+            self.cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_name = 'raw_indeed_jobs'
+                )
+            """)
+        elif self.engine == 'mysql':
+            self.cursor.execute("""
+                SELECT EXISTS (
+                    SELECT * FROM information_schema.tables
+                    WHERE table_name = 'raw_indeed_jobs'
+                )
+            """)
+
+        return self.cursor.fetchone()[0]

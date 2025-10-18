@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh issue view:*)",
+      "Bash(mkdir:*)",
+      "Bash(touch:*)",
+      "Bash(python -m pip install:*)",
+      "Bash(python scripts/ingest_indeed.py:*)",
+      "Bash(tree:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
