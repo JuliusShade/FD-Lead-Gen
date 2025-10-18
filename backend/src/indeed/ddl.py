@@ -390,3 +390,265 @@ CREATE TABLE IF NOT EXISTS raw_indeed_jobs (
             """)
 
         return self.cursor.fetchone()[0]
+
+    def drop_table(self, table_name: str = 'raw_indeed_jobs'):
+        """Drop table if exists."""
+        logger.warning(f"Dropping table {table_name}...")
+        self.cursor.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE")
+        self.connection.commit()
+        logger.info(f"Table {table_name} dropped")
+
+    def create_comprehensive_table(self):
+        """
+        Create comprehensive raw_indeed_jobs table with ALL fields.
+        This replaces the old discovery-based schema with a fixed comprehensive schema.
+        """
+        logger.info("Creating comprehensive raw_indeed_jobs table...")
+
+        if self.engine == 'postgres':
+            ddl = self._get_comprehensive_postgres_ddl()
+        elif self.engine == 'mysql':
+            ddl = self._get_comprehensive_mysql_ddl()
+        else:
+            raise ValueError(f"Unsupported engine: {self.engine}")
+
+        try:
+            # Drop old table if it exists
+            self.drop_table()
+
+            # Create new table
+            self.cursor.execute(ddl)
+            self.connection.commit()
+            logger.info("Comprehensive table raw_indeed_jobs created successfully")
+        except Exception as e:
+            logger.error(f"Failed to create comprehensive table: {e}")
+            self.connection.rollback()
+            raise
+
+    def _get_comprehensive_postgres_ddl(self) -> str:
+        """Generate comprehensive PostgreSQL DDL with all Indeed fields."""
+        return """
+CREATE TABLE raw_indeed_jobs (
+  id BIGSERIAL PRIMARY KEY,
+
+  -- Core identification
+  job_key               TEXT,
+  provider_id           TEXT,
+  job_hash              TEXT UNIQUE NOT NULL,
+
+  -- Basic job info
+  title                 TEXT,
+  company_name          TEXT,
+  company_url           TEXT,
+  company_logo_url      TEXT,
+  company_header_url    TEXT,
+
+  -- Descriptions (CRITICAL!)
+  description_html      TEXT,
+  description_text      TEXT,
+
+  -- Job types
+  job_types             JSONB,
+  job_type_primary      TEXT,
+
+  -- Location (flattened)
+  location_city         TEXT,
+  location_postal_code  TEXT,
+  location_country      TEXT,
+  location_country_code TEXT,
+  location_fmt_long     TEXT,
+  location_fmt_short    TEXT,
+  location_latitude     DOUBLE PRECISION,
+  location_longitude    DOUBLE PRECISION,
+  location_street_address TEXT,
+  location_full_address TEXT,
+
+  -- Salary (flattened)
+  salary_currency       TEXT,
+  salary_max            NUMERIC,
+  salary_min            NUMERIC,
+  salary_source         TEXT,
+  salary_text           TEXT,
+  salary_type           TEXT,
+
+  -- Rating
+  rating_value          NUMERIC,
+  rating_count          INTEGER,
+
+  -- Arrays (as JSONB)
+  benefits              JSONB,
+  occupations           JSONB,
+  attributes            JSONB,
+  contacts              JSONB,
+  shifts                JSONB,
+  social_insurance      JSONB,
+  working_system        JSONB,
+  shift_and_schedule    JSONB,
+
+  -- Boolean flags
+  posted_today          BOOLEAN,
+  is_high_volume_hiring BOOLEAN,
+  is_urgent_hire        BOOLEAN,
+  expired               BOOLEAN,
+  is_remote             BOOLEAN,
+
+  -- Dates and metadata
+  date_published        TIMESTAMPTZ,
+  source_name           TEXT,
+  age_text              TEXT,
+  locale                TEXT,
+  language              TEXT,
+
+  -- URLs
+  job_url               TEXT,
+  apply_url             TEXT,
+
+  -- Company details
+  emails                JSONB,
+  company_addresses     JSONB,
+  company_num_employees TEXT,
+  company_revenue       TEXT,
+  company_industry      TEXT,
+  company_description   TEXT,
+  company_brief_description TEXT,
+  company_links         JSONB,
+  corporate_website     TEXT,
+  company_founded_year  INTEGER,
+  company_ceo           JSONB,
+
+  -- Requirements
+  requirements          JSONB,
+
+  -- Scraping metadata
+  scraping_page         INTEGER,
+  scraping_index        INTEGER,
+  api_run_id            TEXT,
+  meta_name             TEXT,
+  meta_note             TEXT,
+  meta_max_rows         INTEGER,
+
+  -- Full raw payload
+  source_payload        JSONB NOT NULL,
+  ingested_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX idx_raw_indeed_jobs_published ON raw_indeed_jobs (date_published);
+CREATE INDEX idx_raw_indeed_jobs_company   ON raw_indeed_jobs (company_name);
+CREATE INDEX idx_raw_indeed_jobs_ingested  ON raw_indeed_jobs (ingested_at);
+CREATE INDEX idx_raw_indeed_jobs_location  ON raw_indeed_jobs (location_city, location_country_code);
+CREATE INDEX idx_raw_indeed_jobs_job_key   ON raw_indeed_jobs (job_key) WHERE job_key IS NOT NULL;
+"""
+
+    def _get_comprehensive_mysql_ddl(self) -> str:
+        """Generate comprehensive MySQL DDL with all Indeed fields."""
+        return """
+CREATE TABLE raw_indeed_jobs (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+
+  -- Core identification
+  job_key               VARCHAR(255),
+  provider_id           VARCHAR(255),
+  job_hash              VARCHAR(64) UNIQUE NOT NULL,
+
+  -- Basic job info
+  title                 TEXT,
+  company_name          TEXT,
+  company_url           TEXT,
+  company_logo_url      TEXT,
+  company_header_url    TEXT,
+
+  -- Descriptions (CRITICAL!)
+  description_html      LONGTEXT,
+  description_text      LONGTEXT,
+
+  -- Job types
+  job_types             JSON,
+  job_type_primary      TEXT,
+
+  -- Location (flattened)
+  location_city         TEXT,
+  location_postal_code  VARCHAR(20),
+  location_country      TEXT,
+  location_country_code VARCHAR(10),
+  location_fmt_long     TEXT,
+  location_fmt_short    TEXT,
+  location_latitude     DOUBLE,
+  location_longitude    DOUBLE,
+  location_street_address TEXT,
+  location_full_address TEXT,
+
+  -- Salary (flattened)
+  salary_currency       VARCHAR(10),
+  salary_max            DECIMAL(20,2),
+  salary_min            DECIMAL(20,2),
+  salary_source         TEXT,
+  salary_text           TEXT,
+  salary_type           VARCHAR(50),
+
+  -- Rating
+  rating_value          DECIMAL(3,2),
+  rating_count          INT,
+
+  -- Arrays (as JSON)
+  benefits              JSON,
+  occupations           JSON,
+  attributes            JSON,
+  contacts              JSON,
+  shifts                JSON,
+  social_insurance      JSON,
+  working_system        JSON,
+  shift_and_schedule    JSON,
+
+  -- Boolean flags
+  posted_today          TINYINT(1),
+  is_high_volume_hiring TINYINT(1),
+  is_urgent_hire        TINYINT(1),
+  expired               TINYINT(1),
+  is_remote             TINYINT(1),
+
+  -- Dates and metadata
+  date_published        DATETIME,
+  source_name           TEXT,
+  age_text              TEXT,
+  locale                VARCHAR(10),
+  language              VARCHAR(10),
+
+  -- URLs
+  job_url               TEXT,
+  apply_url             TEXT,
+
+  -- Company details
+  emails                JSON,
+  company_addresses     JSON,
+  company_num_employees TEXT,
+  company_revenue       TEXT,
+  company_industry      TEXT,
+  company_description   TEXT,
+  company_brief_description TEXT,
+  company_links         JSON,
+  corporate_website     TEXT,
+  company_founded_year  INT,
+  company_ceo           JSON,
+
+  -- Requirements
+  requirements          JSON,
+
+  -- Scraping metadata
+  scraping_page         INT,
+  scraping_index        INT,
+  api_run_id            VARCHAR(255),
+  meta_name             VARCHAR(255),
+  meta_note             TEXT,
+  meta_max_rows         INT,
+
+  -- Full raw payload
+  source_payload        JSON NOT NULL,
+  ingested_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  INDEX idx_published (date_published),
+  INDEX idx_company (company_name(100)),
+  INDEX idx_ingested (ingested_at),
+  INDEX idx_job_key (job_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+"""

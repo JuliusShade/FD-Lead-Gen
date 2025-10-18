@@ -13,19 +13,20 @@ backend/
 ├── src/
 │   └── indeed/
 │       ├── api.py           # RapidAPI client with pagination
-│       ├── discover.py      # Schema discovery from API responses
+│       ├── discover.py      # Schema discovery from API responses (legacy)
 │       ├── ddl.py           # Database table creation (Postgres/MySQL)
-│       ├── normalize.py     # Data normalization and hashing
+│       ├── normalize.py     # Data normalization, field extraction, and hashing
 │       └── ingest.py        # Orchestration module
 ├── scripts/
-│   └── ingest_indeed.py     # CLI entrypoint
+│   ├── ingest_indeed.py     # CLI entrypoint
+│   └── validate_data.py     # Data quality validation script
 ├── aws/
 │   └── lambda/
 │       └── indeed_ingest/
 │           └── README.md    # Future Lambda packaging scaffold
 ├── .env                     # Environment variables (not committed)
 ├── .env.sample              # Environment template
-├── requirements.txt         # Python dependencies
+├── requirements.txt         # Python dependencies (includes beautifulsoup4)
 └── README.md               # This file
 ```
 
@@ -57,16 +58,16 @@ Required variables:
 
 ### Discovery Mode
 
-Performs schema discovery and creates the `raw_indeed_jobs` table:
+Creates the `raw_indeed_jobs` table with a comprehensive schema:
 
 ```bash
 python scripts/ingest_indeed.py --mode discover
 ```
 
 This will:
-1. Fetch a sample page of jobs from the API
-2. Infer schema from the response structure
-3. Create the `raw_indeed_jobs` table with discovered columns
+1. Fetch a sample page of jobs from the API to verify connectivity
+2. Create the `raw_indeed_jobs` table with a comprehensive predefined schema that captures ALL fields from the Indeed API response
+3. Drop any existing table first (fresh start)
 
 ### Backfill Mode
 
@@ -118,32 +119,71 @@ python scripts/ingest_indeed.py --mode custom \
 
 ## Database Schema
 
-The `raw_indeed_jobs` table includes:
+The `raw_indeed_jobs` table uses a comprehensive predefined schema that captures ALL fields from the Indeed API.
 
 ### Core Fields
-- `id` - Auto-incrementing primary key
-- `provider_id` - Indeed job ID (if available)
-- `job_hash` - SHA-256 hash for deduplication (UNIQUE)
-- `source_payload` - Full JSON response (JSONB)
-- `ingested_at` - Ingestion timestamp
+- `id` - BIGSERIAL primary key
+- `job_key` - Indeed job key
+- `provider_id` - Indeed job ID
+- `job_hash` - SHA-256 hash for deduplication (UNIQUE NOT NULL)
+- `source_payload` - Full JSON response (JSONB NOT NULL)
+- `ingested_at` - Ingestion timestamp (TIMESTAMPTZ, default NOW())
 
-### Discovered Fields
-Fields are automatically discovered from API responses. Common fields include:
-- `title` - Job title
-- `company` - Company name
-- `location` - Location (JSONB)
-- `job_type` - Employment type (JSONB)
-- `salary_text` - Salary information (JSONB)
-- `description` - Job description
-- `job_url` - Application URL
-- `remote` - Remote flag (BOOLEAN)
-- `posted_at` - Posted date (TIMESTAMPTZ)
+### Job Details
+- `title` - Job title (TEXT)
+- `company_name` - Company name (TEXT)
+- `description_html` - Full HTML description (TEXT)
+- `description_text` - Plain text description (TEXT)
+- `job_url` - Application URL (TEXT)
+- `date_published` - Posted date (TIMESTAMPTZ)
+- `is_remote` - Remote flag (BOOLEAN)
+
+### Job Types and Categories
+- `job_types` - Employment types array (JSONB) - e.g., ["Full-time"]
+- `job_type_primary` - Primary job type (TEXT)
+- `occupations` - Occupation categories (JSONB)
+- `attributes` - Additional job attributes (JSONB)
+
+### Location Fields
+- `location_city` - City (TEXT)
+- `location_state` - State (TEXT)
+- `location_country` - Country (TEXT)
+- `location_postal_code` - Zip/postal code (TEXT)
+- `location_street_address` - Street address (TEXT)
+- `location_lat` - Latitude (NUMERIC)
+- `location_lng` - Longitude (NUMERIC)
+
+### Salary Fields
+- `salary_min` - Minimum salary (NUMERIC)
+- `salary_max` - Maximum salary (NUMERIC)
+- `salary_currency` - Currency code (TEXT)
+- `salary_period` - Pay period (TEXT) - e.g., "YEAR"
+- `salary_text` - Display text (TEXT) - e.g., "$50,000 - $60,000 a year"
+
+### Company Details
+- `company_rating` - Company rating (NUMERIC)
+- `company_rating_count` - Number of ratings (INTEGER)
+- `company_reviews_link` - Reviews URL (TEXT)
+- `employer_type` - Employer type (TEXT)
+
+### Benefits and Requirements
+- `benefits` - Benefits list (JSONB)
+- `qualifications` - Required qualifications (JSONB)
+- `hiring_event` - Hiring event details (JSONB)
+
+### Metadata
+- `urgency` - Urgency tags (JSONB)
+- `featured` - Featured job flag (BOOLEAN)
+- `easy_apply` - Easy apply flag (BOOLEAN)
+- `external_apply_link` - External apply URL (TEXT)
 
 ### Indexes
 - Primary key on `id`
-- Unique index on `job_hash`
-- Index on `posted_at`, `company`, `ingested_at`
-- Conditional unique index on `provider_id` (when available)
+- Unique constraint on `job_hash`
+- Index on `date_published`
+- Index on `company_name`
+- Index on `ingested_at`
+- Conditional unique index on `job_key` (when not null)
 
 ## Deduplication
 
@@ -200,13 +240,39 @@ Logs are output to stdout with timestamps and log levels:
 
 Use `--verbose` for debug-level logging.
 
+## Data Validation
+
+Validate data capture quality after ingestion:
+
+```bash
+python scripts/validate_data.py
+```
+
+This script checks:
+- Description field population rate (target: 80%+)
+- Critical field completeness (title, company, location, etc.)
+- JSON/array field population (job_types, benefits, occupations, etc.)
+- Sample record details
+
+Example output:
+```
+=== DATA VALIDATION REPORT ===
+
+Total jobs in database: 23
+
+>> Description Fields:
+  description_html populated: 23/23 (100.0%)
+  description_text populated: 23/23 (100.0%)
+  Either description populated: 23/23 (100.0%)
+  [PASS] 100.0% >= 80% threshold
+```
+
 ## Future Work
 
 - **AWS Lambda Packaging**: See `backend/aws/lambda/indeed_ingest/README.md`
 - **Secrets Manager**: Migrate credentials from `.env` to AWS Secrets Manager
 - **EventBridge Scheduling**: Automate nightly runs
 - **CloudWatch Monitoring**: Add metrics and alarms
-- **Data Quality**: Add validation and quality checks
 
 ## Troubleshooting
 

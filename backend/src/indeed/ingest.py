@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional
 from .api import IndeedAPIClient
 from .discover import SchemaDiscoverer
 from .ddl import DatabaseManager
-from .normalize import normalize_job_record, flatten_job_fields
+from .normalize import normalize_job_record, extract_meta_fields
 
 logger = logging.getLogger(__name__)
 
@@ -58,27 +58,15 @@ class IndeedIngestionOrchestrator:
 
         logger.info(f"Fetched {len(jobs)} sample jobs")
 
-        # Flatten and normalize for schema discovery
-        flattened_jobs = []
+        # Normalize jobs for schema discovery
+        normalized_jobs = []
         for job in jobs[:sample_size]:
-            flattened = flatten_job_fields(job)
-            flattened_jobs.append(flattened)
+            normalized = normalize_job_record(job)
+            normalized_jobs.append(normalized)
 
-        # Discover schema
-        logger.info("Discovering schema from sample jobs...")
-        discovered_schema = self.discoverer.discover_schema(flattened_jobs)
-
-        # Merge with core fields
-        core_fields = self.discoverer.get_core_fields()
-        full_schema = {**core_fields, **discovered_schema}
-
-        logger.info(f"Discovered schema with {len(full_schema)} fields")
-
-        # Check if provider_id exists
-        has_provider_id = any(
-            job.get('provider_id') or job.get('id') or job.get('jobId')
-            for job in jobs[:sample_size]
-        )
+        # Note: We now use a fixed comprehensive schema instead of discovery
+        # This ensures all fields are captured
+        logger.info("Using comprehensive predefined schema...")
 
         # Connect to database
         logger.info("Connecting to database...")
@@ -86,17 +74,15 @@ class IndeedIngestionOrchestrator:
         self.db_manager.connect()
 
         try:
-            # Create table
-            logger.info("Creating table raw_indeed_jobs...")
-            self.db_manager.create_table(full_schema, has_provider_id)
+            # Create table with comprehensive schema
+            logger.info("Creating table raw_indeed_jobs (comprehensive schema)...")
+            self.db_manager.create_comprehensive_table()
 
             logger.info("Discovery complete!")
             return {
                 'success': True,
                 'sample_size': len(jobs),
-                'schema_fields': len(full_schema),
-                'has_provider_id': has_provider_id,
-                'schema': full_schema
+                'table_created': True
             }
 
         finally:
@@ -140,16 +126,11 @@ class IndeedIngestionOrchestrator:
 
         logger.info(f"Fetched {len(jobs)} total jobs")
 
-        # Normalize and enrich jobs
+        # Normalize jobs (now extracts ALL fields)
         logger.info("Normalizing job records...")
         normalized_jobs = []
         for job in jobs:
-            # Flatten fields
-            flattened = flatten_job_fields(job)
-
-            # Add normalized fields (job_hash, provider_id)
-            normalized = normalize_job_record(flattened)
-
+            normalized = normalize_job_record(job)
             normalized_jobs.append(normalized)
 
         # Connect to database

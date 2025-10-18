@@ -1,213 +1,256 @@
 """
-Data normalization and hashing utilities for Indeed job records.
-Computes unique job_hash and extracts provider_id.
+Data normalization and field extraction for Indeed job records.
+Extracts ALL fields from the API response including nested structures.
 """
 
 import hashlib
 import logging
+import json
 from typing import Dict, Any, Optional
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# Import BeautifulSoup for HTML stripping
+try:
+    from bs4 import BeautifulSoup
+    HAS_BS4 = True
+except ImportError:
+    HAS_BS4 = False
+    logger.warning("BeautifulSoup not available - HTML stripping disabled")
+
+
+def strip_html(html: str) -> str:
+    """
+    Strip HTML tags and return plain text.
+
+    Args:
+        html: HTML string
+
+    Returns:
+        Plain text with whitespace collapsed
+    """
+    if not html or not HAS_BS4:
+        return html or ""
+
+    try:
+        soup = BeautifulSoup(html, 'html.parser')
+        text = soup.get_text(" ", strip=True)
+        # Collapse multiple spaces/newlines
+        text = ' '.join(text.split())
+        return text
+    except Exception as e:
+        logger.warning(f"Failed to strip HTML: {e}")
+        return html
+
+
+def safe_get(obj: Any, *keys, default=None):
+    """
+    Safely navigate nested dict/list structures.
+
+    Args:
+        obj: Object to navigate
+        *keys: Path to navigate (supports dict keys and list indices)
+        default: Default value if path not found
+
+    Returns:
+        Value at path or default
+    """
+    current = obj
+    for key in keys:
+        if current is None:
+            return default
+        if isinstance(current, dict):
+            current = current.get(key)
+        elif isinstance(current, list) and isinstance(key, int):
+            try:
+                current = current[key]
+            except (IndexError, TypeError):
+                return default
+        else:
+            return default
+    return current if current is not None else default
 
 
 def compute_job_hash(job: Dict[str, Any]) -> str:
     """
     Compute SHA-256 hash for job deduplication.
 
-    Hash is based on: provider_id || title || company || location || job_url || posted_at
-    Null/missing fields are skipped.
+    Hash components: job_key | title | company_name | job_url | date_published
 
     Args:
-        job: Job record dictionary
+        job: Normalized job record
 
     Returns:
-        64-character hex hash string
+        64-character hex hash
     """
-    # Fields to include in hash (in order)
-    hash_fields = [
-        'provider_id',
-        'id',
-        'title',
-        'company',
-        'companyName',
-        'location',
-        'job_url',
-        'jobUrl',
-        'url',
-        'link',
-        'posted_at',
-        'postedAt',
-        'datePosted',
-        'posted_date'
+    parts = [
+        str(job.get('job_key') or ''),
+        str(job.get('title') or ''),
+        str(job.get('company_name') or ''),
+        str(job.get('job_url') or ''),
+        str(job.get('date_published') or '')
     ]
 
-    # Collect non-null values
-    hash_parts = []
-    for field in hash_fields:
-        value = job.get(field)
-        if value is not None and str(value).strip():
-            hash_parts.append(str(value).strip())
-
-    # If we have no meaningful fields, use entire job JSON as fallback
-    if not hash_parts:
-        import json
-        hash_input = json.dumps(job, sort_keys=True)
-    else:
-        hash_input = '||'.join(hash_parts)
-
-    # Compute SHA-256
-    hash_obj = hashlib.sha256(hash_input.encode('utf-8'))
-    job_hash = hash_obj.hexdigest()
-
-    return job_hash
+    hash_input = '|'.join(parts)
+    return hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
 
 
-def extract_provider_id(job: Dict[str, Any]) -> Optional[str]:
+def normalize_job_record(raw_job: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Extract provider ID from job record if available.
-    Tries common field names.
+    Extract and normalize ALL fields from Indeed API job record.
 
     Args:
-        job: Job record dictionary
+        raw_job: Raw job object from API response
 
     Returns:
-        Provider ID string or None
+        Normalized dictionary with all fields mapped to database columns
     """
-    provider_id_fields = [
-        'provider_id',
-        'id',
-        'jobId',
-        'job_id',
-        'indeed_id',
-        'key'
-    ]
+    normalized = {}
 
-    for field in provider_id_fields:
-        value = job.get(field)
-        if value is not None and str(value).strip():
-            return str(value).strip()
+    # === Core identification ===
+    normalized['job_key'] = safe_get(raw_job, 'jobKey')
+    normalized['provider_id'] = safe_get(raw_job, 'id') or safe_get(raw_job, 'jobId')
 
-    return None
+    # === Basic job info ===
+    normalized['title'] = safe_get(raw_job, 'title')
+    normalized['company_name'] = safe_get(raw_job, 'companyName')
+    normalized['company_url'] = safe_get(raw_job, 'companyUrl')
+    normalized['company_logo_url'] = safe_get(raw_job, 'companyLogoUrl')
+    normalized['company_header_url'] = safe_get(raw_job, 'companyHeaderUrl')
 
+    # === Descriptions (CRITICAL - was missing!) ===
+    description_html = safe_get(raw_job, 'descriptionHtml')
+    description_text = safe_get(raw_job, 'descriptionText')
 
-def normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Normalize and enrich job record with computed fields.
+    normalized['description_html'] = description_html
+    normalized['description_text'] = description_text
 
-    Adds:
-    - job_hash: Unique hash for deduplication
-    - provider_id: Extracted provider ID (if available)
+    # If we have HTML but no text, derive it
+    if description_html and not description_text:
+        normalized['description_text'] = strip_html(description_html)
 
-    Args:
-        job: Raw job record from API
+    # === Job types (array) ===
+    job_types = safe_get(raw_job, 'jobType', default=[])
+    normalized['job_types'] = job_types if isinstance(job_types, list) else [job_types] if job_types else []
+    normalized['job_type_primary'] = job_types[0] if job_types and isinstance(job_types, list) else job_types
 
-    Returns:
-        Enriched job record with normalized fields
-    """
-    normalized = job.copy()
+    # === Location (nested object) ===
+    location = safe_get(raw_job, 'location', default={})
+    normalized['location_city'] = safe_get(location, 'city')
+    normalized['location_postal_code'] = safe_get(location, 'postalCode')
+    normalized['location_country'] = safe_get(location, 'country')
+    normalized['location_country_code'] = safe_get(location, 'countryCode')
+    normalized['location_fmt_long'] = safe_get(location, 'formattedAddressLong')
+    normalized['location_fmt_short'] = safe_get(location, 'formattedAddressShort')
+    normalized['location_latitude'] = safe_get(location, 'latitude')
+    normalized['location_longitude'] = safe_get(location, 'longitude')
+    normalized['location_street_address'] = safe_get(location, 'streetAddress')
+    normalized['location_full_address'] = safe_get(location, 'fullAddress')
 
-    # Compute and add job_hash
-    normalized['job_hash'] = compute_job_hash(job)
+    # === Salary (nested object) ===
+    salary = safe_get(raw_job, 'salary', default={})
+    normalized['salary_currency'] = safe_get(salary, 'salaryCurrency')
+    normalized['salary_max'] = safe_get(salary, 'salaryMax')
+    normalized['salary_min'] = safe_get(salary, 'salaryMin')
+    normalized['salary_source'] = safe_get(salary, 'salarySource')
+    normalized['salary_text'] = safe_get(salary, 'salaryText')
+    normalized['salary_type'] = safe_get(salary, 'salaryType')
 
-    # Extract and add provider_id if not already present
-    if 'provider_id' not in normalized or not normalized['provider_id']:
-        normalized['provider_id'] = extract_provider_id(job)
+    # === Rating ===
+    rating = safe_get(raw_job, 'rating', default={})
+    normalized['rating_value'] = safe_get(rating, 'rating')
+    normalized['rating_count'] = safe_get(rating, 'count')
+
+    # === Arrays (keep as JSON) ===
+    normalized['benefits'] = safe_get(raw_job, 'benefits', default=[])
+    normalized['occupations'] = safe_get(raw_job, 'occupation', default=[])
+    normalized['attributes'] = safe_get(raw_job, 'attributes', default=[])
+    normalized['contacts'] = safe_get(raw_job, 'contacts', default=[])
+    normalized['shifts'] = safe_get(raw_job, 'shifts', default=[])
+    normalized['social_insurance'] = safe_get(raw_job, 'socialInsurance', default=[])
+    normalized['working_system'] = safe_get(raw_job, 'workingSystem', default=[])
+    normalized['shift_and_schedule'] = safe_get(raw_job, 'shiftAndSchedule', default=[])
+
+    # === Boolean flags ===
+    normalized['posted_today'] = safe_get(raw_job, 'postedToday', default=False)
+
+    hiring_demand = safe_get(raw_job, 'hiringDemand', default={})
+    normalized['is_high_volume_hiring'] = safe_get(hiring_demand, 'isHighVolumeHiring', default=False)
+    normalized['is_urgent_hire'] = safe_get(hiring_demand, 'isUrgentHire', default=False)
+
+    normalized['expired'] = safe_get(raw_job, 'expired', default=False)
+    normalized['is_remote'] = safe_get(raw_job, 'isRemote', default=False)
+
+    # === Dates and metadata ===
+    normalized['date_published'] = safe_get(raw_job, 'datePublished')
+    normalized['source_name'] = safe_get(raw_job, 'source')
+    normalized['age_text'] = safe_get(raw_job, 'age')
+    normalized['locale'] = safe_get(raw_job, 'locale')
+    normalized['language'] = safe_get(raw_job, 'language')
+
+    # === URLs ===
+    normalized['job_url'] = safe_get(raw_job, 'jobUrl')
+    normalized['apply_url'] = safe_get(raw_job, 'applyUrl')
+
+    # === Company details (arrays/objects) ===
+    normalized['emails'] = safe_get(raw_job, 'emails', default=[])
+    normalized['company_addresses'] = safe_get(raw_job, 'companyAddresses', default=[])
+    normalized['company_num_employees'] = safe_get(raw_job, 'companyNumEmployees')
+    normalized['company_revenue'] = safe_get(raw_job, 'companyRevenue')
+    normalized['company_industry'] = safe_get(raw_job, 'companyIndustry')
+    normalized['company_description'] = safe_get(raw_job, 'companyDescription')
+    normalized['company_brief_description'] = safe_get(raw_job, 'companyBriefDescription')
+
+    # Company links
+    company_links = safe_get(raw_job, 'companyLinks', default={})
+    normalized['company_links'] = company_links
+    normalized['corporate_website'] = safe_get(company_links, 'corporateWebsite')
+
+    # Company founded
+    company_founded = safe_get(raw_job, 'companyFounded', default={})
+    normalized['company_founded_year'] = safe_get(company_founded, 'year')
+
+    # CEO
+    normalized['company_ceo'] = safe_get(raw_job, 'companyCeo', default={})
+
+    # === Requirements ===
+    normalized['requirements'] = safe_get(raw_job, 'requirements', default=[])
+
+    # === Scraping metadata ===
+    scraping_info = safe_get(raw_job, 'scrapingInfo', default={})
+    normalized['scraping_page'] = safe_get(scraping_info, 'page')
+    normalized['scraping_index'] = safe_get(scraping_info, 'index')
+
+    # === Compute hash ===
+    normalized['job_hash'] = compute_job_hash(normalized)
 
     return normalized
 
 
-def flatten_job_fields(job: Dict[str, Any]) -> Dict[str, Any]:
+def extract_meta_fields(response: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Flatten common job fields to consistent column names.
-
-    Maps various API field names to standardized schema fields:
-    - title
-    - company
-    - location
-    - job_type
-    - seniority
-    - remote
-    - posted_at
-    - job_url
-    - salary_text
-    - description
+    Extract metadata fields from API response.
 
     Args:
-        job: Job record dictionary
+        response: Full API response
 
     Returns:
-        Flattened dictionary with standardized field names
+        Dictionary with metadata fields
     """
-    flattened = {}
+    meta = {}
 
-    # Title mapping
-    title_fields = ['title', 'jobTitle', 'job_title', 'position']
-    for field in title_fields:
-        if field in job and job[field]:
-            flattened['title'] = job[field]
-            break
+    # Top-level meta
+    meta['meta_name'] = safe_get(response, 'name')
+    meta['meta_note'] = safe_get(safe_get(response, 'meta', default={}), 'note')
+    meta['meta_max_rows'] = safe_get(safe_get(response, 'meta', default={}), 'max_rows_per_request')
 
-    # Company mapping
-    company_fields = ['company', 'companyName', 'company_name', 'employer']
-    for field in company_fields:
-        if field in job and job[field]:
-            flattened['company'] = job[field]
-            break
+    # Data/scraper run ID
+    meta['api_run_id'] = safe_get(response, 'id')
 
-    # Location mapping
-    location_fields = ['location', 'jobLocation', 'job_location', 'city']
-    for field in location_fields:
-        if field in job and job[field]:
-            flattened['location'] = job[field]
-            break
+    # Scraper request info
+    scraper_data = safe_get(response, 'data', 'scraper', default={})
+    if scraper_data:
+        meta['api_run_id'] = meta['api_run_id'] or safe_get(scraper_data, 'id')
 
-    # Job type mapping
-    job_type_fields = ['jobType', 'job_type', 'employmentType', 'employment_type']
-    for field in job_type_fields:
-        if field in job and job[field]:
-            flattened['job_type'] = job[field]
-            break
-
-    # Seniority mapping
-    seniority_fields = ['seniority', 'seniorityLevel', 'level', 'experience_level']
-    for field in seniority_fields:
-        if field in job and job[field]:
-            flattened['seniority'] = job[field]
-            break
-
-    # Remote mapping
-    remote_fields = ['remote', 'isRemote', 'is_remote', 'remoteAllowed']
-    for field in remote_fields:
-        if field in job:
-            flattened['remote'] = job[field]
-            break
-
-    # Posted date mapping
-    posted_fields = ['posted_at', 'postedAt', 'datePosted', 'posted_date', 'date']
-    for field in posted_fields:
-        if field in job and job[field]:
-            flattened['posted_at'] = job[field]
-            break
-
-    # Job URL mapping
-    url_fields = ['job_url', 'jobUrl', 'url', 'link', 'applyUrl']
-    for field in url_fields:
-        if field in job and job[field]:
-            flattened['job_url'] = job[field]
-            break
-
-    # Salary mapping
-    salary_fields = ['salary', 'salary_text', 'salaryText', 'compensation', 'pay']
-    for field in salary_fields:
-        if field in job and job[field]:
-            flattened['salary_text'] = job[field]
-            break
-
-    # Description mapping
-    desc_fields = ['description', 'jobDescription', 'job_description', 'summary']
-    for field in desc_fields:
-        if field in job and job[field]:
-            flattened['description'] = job[field]
-            break
-
-    return flattened
+    return meta
