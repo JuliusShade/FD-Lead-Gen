@@ -14,3 +14,6 @@ mysql-connector-python>=8.2.0
 
 # HTML parsing for description text extraction
 beautifulsoup4>=4.12.0
+
+# OpenAI for LLM job scoring and HR contact selection
+openai>=1.12.0

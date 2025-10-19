@@ -652,3 +652,269 @@ CREATE TABLE raw_indeed_jobs (
   INDEX idx_job_key (job_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
+
+    def create_qualified_jobs_table(self):
+        """Create qualified_indeed_jobs table for sales-ready jobs."""
+        logger.info("Creating qualified_indeed_jobs table...")
+
+        if self.engine == 'postgres':
+            ddl = self._get_qualified_jobs_postgres_ddl()
+        elif self.engine == 'mysql':
+            ddl = self._get_qualified_jobs_mysql_ddl()
+        else:
+            raise ValueError(f"Unsupported engine: {self.engine}")
+
+        try:
+            self.cursor.execute(ddl)
+            self.connection.commit()
+            logger.info("Table qualified_indeed_jobs created successfully")
+        except Exception as e:
+            logger.error(f"Failed to create qualified_indeed_jobs table: {e}")
+            self.connection.rollback()
+            raise
+
+    def _get_qualified_jobs_postgres_ddl(self) -> str:
+        """Generate PostgreSQL DDL for qualified_indeed_jobs table."""
+        return """
+CREATE TABLE IF NOT EXISTS qualified_indeed_jobs (
+  id                        BIGSERIAL PRIMARY KEY,
+  raw_job_id                BIGINT,
+  job_hash                  TEXT UNIQUE,
+  job_key                   TEXT,
+
+  title                     TEXT,
+  company_name              TEXT,
+  location_fmt_short        TEXT,
+  date_published            TIMESTAMPTZ,
+  salary_text               TEXT,
+  job_url                   TEXT,
+  apply_url                 TEXT,
+
+  description_text          TEXT,
+  description_html          TEXT,
+
+  -- HR contact (best-effort; may be null)
+  hr_contact_name           TEXT,
+  hr_contact_title          TEXT,
+  hr_contact_email          TEXT,
+  hr_contact_linkedin       TEXT,
+
+  -- LLM scoring
+  score                     INTEGER NOT NULL,
+  reasons                   JSONB,
+  flags                     JSONB,
+
+  -- Sales prioritization
+  company_30d_postings_count INTEGER NOT NULL,
+
+  populated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_qij_score_desc ON qualified_indeed_jobs (score DESC);
+CREATE INDEX IF NOT EXISTS idx_qij_company_count_desc ON qualified_indeed_jobs (company_30d_postings_count DESC);
+CREATE INDEX IF NOT EXISTS idx_qij_published ON qualified_indeed_jobs (date_published);
+CREATE INDEX IF NOT EXISTS idx_qij_company ON qualified_indeed_jobs (company_name);
+"""
+
+    def _get_qualified_jobs_mysql_ddl(self) -> str:
+        """Generate MySQL DDL for qualified_indeed_jobs table."""
+        return """
+CREATE TABLE IF NOT EXISTS qualified_indeed_jobs (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  raw_job_id BIGINT NULL,
+  job_hash VARCHAR(128) UNIQUE,
+  job_key VARCHAR(255),
+
+  title TEXT,
+  company_name TEXT,
+  location_fmt_short TEXT,
+  date_published DATETIME,
+  salary_text TEXT,
+  job_url TEXT,
+  apply_url TEXT,
+
+  description_text LONGTEXT,
+  description_html LONGTEXT,
+
+  hr_contact_name TEXT,
+  hr_contact_title TEXT,
+  hr_contact_email TEXT,
+  hr_contact_linkedin TEXT,
+
+  score INT NOT NULL,
+  reasons JSON,
+  flags JSON,
+
+  company_30d_postings_count INT NOT NULL,
+
+  populated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  INDEX idx_qij_score_desc (score),
+  INDEX idx_qij_company_count_desc (company_30d_postings_count),
+  INDEX idx_qij_published (date_published),
+  INDEX idx_qij_company (company_name(100))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+"""
+
+    def get_company_30d_count(self, company_name: str) -> int:
+        """
+        Get count of jobs posted by company in last 30 days.
+
+        Args:
+            company_name: Company name to count
+
+        Returns:
+            Count of jobs
+        """
+        if not company_name:
+            return 0
+
+        try:
+            if self.engine == 'postgres':
+                sql = """
+                    SELECT COUNT(*) AS cnt
+                    FROM raw_indeed_jobs
+                    WHERE company_name = %s
+                      AND date_published >= (NOW() AT TIME ZONE 'UTC') - INTERVAL '30 days'
+                """
+            elif self.engine == 'mysql':
+                sql = """
+                    SELECT COUNT(*) AS cnt
+                    FROM raw_indeed_jobs
+                    WHERE company_name = %s
+                      AND date_published >= (UTC_TIMESTAMP() - INTERVAL 30 DAY)
+                """
+            else:
+                return 0
+
+            self.cursor.execute(sql, (company_name,))
+            result = self.cursor.fetchone()
+            count = result[0] if result else 0
+
+            logger.debug(f"Company {company_name} has {count} jobs in last 30 days")
+            return count
+
+        except Exception as e:
+            logger.error(f"Error getting company 30d count: {e}")
+            return 0
+
+    def upsert_qualified_job(self, job: Dict[str, Any]) -> bool:
+        """
+        Upsert qualified job into qualified_indeed_jobs table.
+
+        Args:
+            job: Qualified job dictionary
+
+        Returns:
+            True if inserted/updated, False otherwise
+        """
+        try:
+            if self.engine == 'postgres':
+                return self._upsert_qualified_job_postgres(job)
+            elif self.engine == 'mysql':
+                return self._upsert_qualified_job_mysql(job)
+            else:
+                raise ValueError(f"Unsupported engine: {self.engine}")
+        except Exception as e:
+            logger.error(f"Error upserting qualified job: {e}")
+            return False
+
+    def _upsert_qualified_job_postgres(self, job: Dict[str, Any]) -> bool:
+        """Upsert qualified job into PostgreSQL."""
+        # Prepare values
+        values = {
+            'raw_job_id': job.get('raw_job_id'),
+            'job_hash': job.get('job_hash'),
+            'job_key': job.get('job_key'),
+            'title': job.get('title'),
+            'company_name': job.get('company_name'),
+            'location_fmt_short': job.get('location_fmt_short'),
+            'date_published': job.get('date_published'),
+            'salary_text': job.get('salary_text'),
+            'job_url': job.get('job_url'),
+            'apply_url': job.get('apply_url'),
+            'description_text': job.get('description_text'),
+            'description_html': job.get('description_html'),
+            'hr_contact_name': job.get('hr_contact_name'),
+            'hr_contact_title': job.get('hr_contact_title'),
+            'hr_contact_email': job.get('hr_contact_email'),
+            'hr_contact_linkedin': job.get('hr_contact_linkedin'),
+            'score': job.get('score'),
+            'reasons': Json(job.get('reasons', [])),
+            'flags': Json(job.get('flags', {})),
+            'company_30d_postings_count': job.get('company_30d_postings_count', 0)
+        }
+
+        sql = """
+            INSERT INTO qualified_indeed_jobs (
+                raw_job_id, job_hash, job_key, title, company_name, location_fmt_short,
+                date_published, salary_text, job_url, apply_url, description_text, description_html,
+                hr_contact_name, hr_contact_title, hr_contact_email, hr_contact_linkedin,
+                score, reasons, flags, company_30d_postings_count
+            )
+            VALUES (
+                %(raw_job_id)s, %(job_hash)s, %(job_key)s, %(title)s, %(company_name)s, %(location_fmt_short)s,
+                %(date_published)s, %(salary_text)s, %(job_url)s, %(apply_url)s, %(description_text)s, %(description_html)s,
+                %(hr_contact_name)s, %(hr_contact_title)s, %(hr_contact_email)s, %(hr_contact_linkedin)s,
+                %(score)s, %(reasons)s, %(flags)s, %(company_30d_postings_count)s
+            )
+            ON CONFLICT (job_hash) DO UPDATE SET
+                score = EXCLUDED.score,
+                reasons = EXCLUDED.reasons,
+                flags = EXCLUDED.flags,
+                hr_contact_name = EXCLUDED.hr_contact_name,
+                hr_contact_title = EXCLUDED.hr_contact_title,
+                hr_contact_email = EXCLUDED.hr_contact_email,
+                hr_contact_linkedin = EXCLUDED.hr_contact_linkedin,
+                company_30d_postings_count = EXCLUDED.company_30d_postings_count,
+                populated_at = NOW()
+            RETURNING id
+        """
+
+        self.cursor.execute(sql, values)
+        result = self.cursor.fetchone()
+        self.connection.commit()
+
+        return result is not None
+
+    def _upsert_qualified_job_mysql(self, job: Dict[str, Any]) -> bool:
+        """Upsert qualified job into MySQL."""
+        # Prepare values
+        reasons_json = json.dumps(job.get('reasons', []))
+        flags_json = json.dumps(job.get('flags', {}))
+
+        sql = """
+            INSERT INTO qualified_indeed_jobs (
+                raw_job_id, job_hash, job_key, title, company_name, location_fmt_short,
+                date_published, salary_text, job_url, apply_url, description_text, description_html,
+                hr_contact_name, hr_contact_title, hr_contact_email, hr_contact_linkedin,
+                score, reasons, flags, company_30d_postings_count
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                score = VALUES(score),
+                reasons = VALUES(reasons),
+                flags = VALUES(flags),
+                hr_contact_name = VALUES(hr_contact_name),
+                hr_contact_title = VALUES(hr_contact_title),
+                hr_contact_email = VALUES(hr_contact_email),
+                hr_contact_linkedin = VALUES(hr_contact_linkedin),
+                company_30d_postings_count = VALUES(company_30d_postings_count),
+                populated_at = CURRENT_TIMESTAMP
+        """
+
+        values = (
+            job.get('raw_job_id'), job.get('job_hash'), job.get('job_key'),
+            job.get('title'), job.get('company_name'), job.get('location_fmt_short'),
+            job.get('date_published'), job.get('salary_text'), job.get('job_url'),
+            job.get('apply_url'), job.get('description_text'), job.get('description_html'),
+            job.get('hr_contact_name'), job.get('hr_contact_title'),
+            job.get('hr_contact_email'), job.get('hr_contact_linkedin'),
+            job.get('score'), reasons_json, flags_json,
+            job.get('company_30d_postings_count', 0)
+        )
+
+        self.cursor.execute(sql, values)
+        self.connection.commit()
+
+        return self.cursor.rowcount > 0

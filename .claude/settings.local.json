@@ -1,16 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(gh issue view:*)",
-      "Bash(mkdir:*)",
-      "Bash(touch:*)",
-      "Bash(python -m pip install:*)",
-      "Bash(python scripts/ingest_indeed.py:*)",
-      "Bash(tree:*)",
-      "Bash(git add:*)",
-      "Bash(git commit -m \"$(cat <<''EOF''\nfeat: implement Indeed job ingestion via RapidAPI (#1)\n\nImplemented Python-based job ingestion system for Indeed via RapidAPI with the following features:\n\n- **Schema Discovery**: Auto-discovers table schema from API responses\n- **Database Support**: PostgreSQL and MySQL DDL generation\n- **Pagination**: Fetches up to 10 pages with rate limiting (429) handling\n- **Deduplication**: Hash-based deduplication using job_hash (SHA-256)\n- **CLI Modes**: discover, backfill, nightly, and custom modes\n- **Resilience**: Exponential backoff with jitter for rate limits\n\nDatabase Table: raw_indeed_jobs\n- Core fields: id, provider_id, job_hash (unique), source_payload (JSONB), ingested_at\n- Discovered fields: title, company, location, job_type, salary_text, description, job_url, remote, posted_at\n- Indexes on posted_at, company, ingested_at, and unique constraint on job_hash\n\nTest Results:\n- Discovery mode: ✅ Table created successfully\n- Backfill mode: ✅ 45 jobs fetched, 24 inserted, 21 skipped (duplicates)\n- Nightly mode: ✅ 150 jobs fetched, 19 inserted, 131 skipped (duplicates)\n\nAWS Lambda scaffold created for future deployment.\n\nCloses #1\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
-      "Bash(python -m pip:*)",
-      "Bash(python scripts/validate_data.py:*)"
+      "Bash(gh issue close:*)",
+      "Bash(gh issue comment:*)",
+      "Bash(python scripts/qualify_indeed_jobs.py:*)",
+      "Bash(python:*)"
     ],
     "deny": [],
     "ask": []
