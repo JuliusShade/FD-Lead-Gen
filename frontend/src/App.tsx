@@ -7,6 +7,8 @@ export default function App() {
   // For now, just use a simple state for login
   const [loggedIn, setLoggedIn] = useState(false);
 
+  console.log("App: Rendering, loggedIn =", loggedIn);
+
   return (
     <BrowserRouter>
       <Routes>

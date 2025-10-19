@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
 import {
   useReactTable,
   getCoreRowModel,
@@ -14,20 +13,22 @@ import { createPortal } from "react-dom";
 import TableCellWithLinks from "../components/TableCellWithLinks";
 import "../index.css";
 
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL!,
-  import.meta.env.VITE_SUPABASE_ANON_KEY!
-);
-
 type JobPostingSummary = {
   id: number;
   company: string;
   position: string | null;
+  location: string | null;
+  score: number;
+  salary_text: string | null;
+  job_url: string | null;
   reason: string | null;
   ai_rationale: string | null;
   type_of_role: string[] | null;
   number_of_positions_last_30: string | null;
-  estimated_opportunity: string | null;
+  hr_contact_name: string | null;
+  hr_contact_title: string | null;
+  hr_contact_email: string | null;
+  hr_contact_linkedin: string | null;
   primary_contact: string | null;
   created_at: string;
   date_processed: string;
@@ -165,11 +166,22 @@ export default function JobPostingSummary() {
   const tooltipTimeoutRef = React.useRef<NodeJS.Timeout>();
 
   useEffect(() => {
-    supabase
-      .from("job_posting_summary")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .then(({ data }) => setData(data || []));
+    // Fetch from our backend API instead of Supabase
+    const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:5001";
+    console.log("JobPostingSummary: Fetching data from API...", apiUrl);
+    fetch(`${apiUrl}/api/jobs/summary`)
+      .then((res) => {
+        console.log("JobPostingSummary: Response received", res.status);
+        return res.json();
+      })
+      .then((response) => {
+        console.log("JobPostingSummary: Data loaded", response.data?.length, "jobs");
+        setData(response.data || []);
+      })
+      .catch((error) => {
+        console.error("JobPostingSummary: Error fetching jobs:", error);
+        setData([]);
+      });
   }, []);
 
   const handleFilterClick = (e: React.MouseEvent, columnId: string) => {
@@ -222,8 +234,8 @@ export default function JobPostingSummary() {
     data.forEach((row) => {
       const value = row[columnId as keyof JobPostingSummary];
       if (value !== null && value !== undefined) {
-        if (columnId === "created_at" && typeof value === "string") {
-          // For created_at column, extract just the date part (YYYY-MM-DD) directly from UTC string
+        if ((columnId === "created_at" || columnId === "date_processed") && typeof value === "string") {
+          // For date columns, extract just the date part (YYYY-MM-DD) directly from UTC string
           try {
             const dateValue = value.split("T")[0];
             values.add(dateValue);
@@ -362,39 +374,6 @@ export default function JobPostingSummary() {
             <button
               className="filter-button"
               onClick={(e) => handleFilterClick(e, "position")}
-              style={{
-                background: "none",
-                border: "none",
-                padding: 0,
-                cursor: "pointer",
-              }}
-            >
-              <FaFilter
-                size={14}
-                color={column.getFilterValue() ? "var(--color-orange)" : "#888"}
-              />
-            </button>
-          </div>
-        ),
-        enableColumnFilter: true,
-        filterFn: multiSelectFilter,
-      },
-      {
-        accessorKey: "reason",
-        header: ({ column }: HeaderProps) => (
-          <div
-            className="filter-container"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              position: "relative",
-            }}
-          >
-            <span>REASON</span>
-            <button
-              className="filter-button"
-              onClick={(e) => handleFilterClick(e, "reason")}
               style={{
                 background: "none",
                 border: "none",
@@ -575,6 +554,191 @@ export default function JobPostingSummary() {
         },
       },
       {
+        accessorKey: "score",
+        header: ({ column }: HeaderProps) => (
+          <div
+            className="filter-container"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              position: "relative",
+            }}
+          >
+            <span>SCORE</span>
+            <button
+              className="filter-button"
+              onClick={(e) => handleFilterClick(e, "score")}
+              style={{
+                background: "none",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+              }}
+            >
+              <FaFilter
+                size={14}
+                color={column.getFilterValue() ? "var(--color-orange)" : "#888"}
+              />
+            </button>
+          </div>
+        ),
+        enableColumnFilter: true,
+        filterFn: multiSelectFilter,
+      },
+      {
+        accessorKey: "location",
+        header: ({ column }: HeaderProps) => (
+          <div
+            className="filter-container"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              position: "relative",
+            }}
+          >
+            <span>LOCATION</span>
+            <button
+              className="filter-button"
+              onClick={(e) => handleFilterClick(e, "location")}
+              style={{
+                background: "none",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+              }}
+            >
+              <FaFilter
+                size={14}
+                color={column.getFilterValue() ? "var(--color-orange)" : "#888"}
+              />
+            </button>
+          </div>
+        ),
+        enableColumnFilter: true,
+        filterFn: multiSelectFilter,
+      },
+      {
+        accessorKey: "salary_text",
+        header: ({ column }: HeaderProps) => (
+          <div
+            className="filter-container"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              position: "relative",
+            }}
+          >
+            <span>SALARY</span>
+            <button
+              className="filter-button"
+              onClick={(e) => handleFilterClick(e, "salary_text")}
+              style={{
+                background: "none",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+              }}
+            >
+              <FaFilter
+                size={14}
+                color={column.getFilterValue() ? "var(--color-orange)" : "#888"}
+              />
+            </button>
+          </div>
+        ),
+        enableColumnFilter: true,
+        filterFn: multiSelectFilter,
+      },
+      {
+        accessorKey: "job_url",
+        header: "JOB URL",
+        cell: ({ getValue }: { getValue: () => any }) => {
+          const value = getValue() as string | null;
+          return (
+            <TableCellWithLinks content={value} style={{ width: "100%" }} />
+          );
+        },
+      },
+      {
+        accessorKey: "hr_contact_name",
+        header: ({ column }: HeaderProps) => (
+          <div
+            className="filter-container"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              position: "relative",
+            }}
+          >
+            <span>HR CONTACT</span>
+            <button
+              className="filter-button"
+              onClick={(e) => handleFilterClick(e, "hr_contact_name")}
+              style={{
+                background: "none",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+              }}
+            >
+              <FaFilter
+                size={14}
+                color={column.getFilterValue() ? "var(--color-orange)" : "#888"}
+              />
+            </button>
+          </div>
+        ),
+        enableColumnFilter: true,
+        filterFn: multiSelectFilter,
+      },
+      {
+        accessorKey: "hr_contact_title",
+        header: ({ column }: HeaderProps) => (
+          <div
+            className="filter-container"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              position: "relative",
+            }}
+          >
+            <span>HR TITLE</span>
+            <button
+              className="filter-button"
+              onClick={(e) => handleFilterClick(e, "hr_contact_title")}
+              style={{
+                background: "none",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+              }}
+            >
+              <FaFilter
+                size={14}
+                color={column.getFilterValue() ? "var(--color-orange)" : "#888"}
+              />
+            </button>
+          </div>
+        ),
+        enableColumnFilter: true,
+        filterFn: multiSelectFilter,
+      },
+      {
+        accessorKey: "hr_contact_linkedin",
+        header: "HR LINKEDIN",
+        cell: ({ getValue }: { getValue: () => any }) => {
+          const value = getValue() as string | null;
+          return (
+            <TableCellWithLinks content={value} style={{ width: "100%" }} />
+          );
+        },
+      },
+      {
         accessorKey: "created_at",
         header: ({ column }: HeaderProps) => (
           <div
@@ -606,6 +770,43 @@ export default function JobPostingSummary() {
         ),
         enableColumnFilter: true,
         filterFn: dateFilter,
+      },
+      {
+        accessorKey: "date_processed",
+        header: ({ column }: HeaderProps) => (
+          <div
+            className="filter-container"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              position: "relative",
+            }}
+          >
+            <span>INGESTED AT</span>
+            <button
+              className="filter-button"
+              onClick={(e) => handleFilterClick(e, "date_processed")}
+              style={{
+                background: "none",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+              }}
+            >
+              <FaFilter
+                size={14}
+                color={column.getFilterValue() ? "var(--color-orange)" : "#888"}
+              />
+            </button>
+          </div>
+        ),
+        enableColumnFilter: true,
+        filterFn: dateFilter,
+        cell: ({ getValue }: { getValue: () => any }) => {
+          const value = getValue() as string | null;
+          return value ? formatDateForDisplay(value) : "";
+        },
       },
     ],
     [activeFilter]
@@ -720,13 +921,16 @@ export default function JobPostingSummary() {
             {table.getRowModel().rows.map((row) => (
               <tr key={row.id}>
                 {row.getVisibleCells().map((cell) => {
-                  // Check if this cell uses TableCellWithLinks (for URL-enabled columns)
-                  const isLinkCell = [
-                    "primary_contact",
-                    "number_of_positions_last_30",
-                    "estimated_opportunity",
-                    "type_of_role",
-                  ].includes(cell.column.id);
+                  // Get the cell value for tooltip
+                  const cellValue = cell.getValue();
+                  let tooltipText = "";
+
+                  // Format tooltip text based on value type
+                  if (Array.isArray(cellValue)) {
+                    tooltipText = cellValue.join(", ");
+                  } else if (cellValue !== null && cellValue !== undefined) {
+                    tooltipText = String(cellValue);
+                  }
 
                   return (
                     <td
@@ -738,19 +942,12 @@ export default function JobPostingSummary() {
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
-                        cursor: isLinkCell ? "default" : "pointer",
+                        cursor: "pointer",
                         position: "relative",
                       }}
-                      onMouseEnter={
-                        isLinkCell
-                          ? undefined
-                          : (e) =>
-                              handleCellMouseEnter(e, String(cell.getValue()))
-                      }
-                      onMouseMove={isLinkCell ? undefined : handleCellMouseMove}
-                      onMouseLeave={
-                        isLinkCell ? undefined : handleCellMouseLeave
-                      }
+                      onMouseEnter={(e) => handleCellMouseEnter(e, tooltipText)}
+                      onMouseMove={handleCellMouseMove}
+                      onMouseLeave={handleCellMouseLeave}
                     >
                       {flexRender(
                         cell.column.columnDef.cell,

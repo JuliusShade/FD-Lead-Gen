@@ -60,3 +60,4 @@ env/
 dist/
 build/
 *.egg
+nul

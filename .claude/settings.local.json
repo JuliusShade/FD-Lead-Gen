@@ -1,10 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Bash(gh issue close:*)",
-      "Bash(gh issue comment:*)",
-      "Bash(python scripts/qualify_indeed_jobs.py:*)",
-      "Bash(python:*)"
+      "Bash(git push:*)",
+      "Bash(findstr:*)",
+      "Bash(dir \"C:\\Python311\\Lib\\site-packages\\openai\" /B)",
+      "Bash(set:*)",
+      "Bash(%PYTHONPATH%)",
+      "Bash(psql:*)",
+      "Bash(curl:*)",
+      "Bash(timeout 5 curl:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []

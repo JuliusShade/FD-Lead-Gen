@@ -1,6 +1,7 @@
 import React from "react";
 
 export default function LoginPage({ onLogin }: { onLogin: () => void }) {
+  console.log("LoginPage: Rendering");
   return (
     <div
       style={{
